@@ -52,7 +52,7 @@ export class FuelUtils {
         console.log('Current Fuel Price: ' + curFuelPrice);
 
         // Buy fuel if current price is lower than max price
-        if(curFuelPrice < this.maxFuelPrice) {
+        if(curFuelPrice <= this.maxFuelPrice) {
             const emptyFuelCapacity = (await this.page.locator('#remCapacity').innerText()).replaceAll(',', '');
 
             await this.page.getByPlaceholder('Amount to purchase').click();
