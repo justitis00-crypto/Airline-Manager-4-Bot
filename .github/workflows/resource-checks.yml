@@ -13,10 +13,10 @@ on:
   schedule:
     # CO2: 02, 12, 22, 32, 42, 52 UTC
     # Fuel: 07, 17, 27, 37, 47, 57 UTC
-    # Each resource is checked every 10 minutes, with a 5-minute delay
-    # between fuel and CO2 checks. Times avoid the start of the hour.
-    - cron: '2-59/10 * * * *'
-    - cron: '7-59/10 * * * *'
+    # Each resource is checked every 10 minutes, staggered by 5 minutes.
+    # Explicit minute lists are used to make the schedule unambiguous.
+    - cron: '2,12,22,32,42,52 * * * *'
+    - cron: '7,17,27,37,47,57 * * * *'
 
 concurrency:
   group: resource-checks
@@ -27,7 +27,7 @@ jobs:
     timeout-minutes: 10
     runs-on: ubuntu-22.04
     env:
-      CHECK_TYPE: ${{ github.event_name == 'workflow_dispatch' && inputs.check_type || github.event.schedule == '7-59/10 * * * *' && 'fuel' || 'co2' }}
+      CHECK_TYPE: ${{ github.event_name == 'workflow_dispatch' && inputs.check_type || github.event.schedule == '7,17,27,37,47,57 * * * *' && 'fuel' || 'co2' }}
 
     steps:
       - uses: actions/checkout@v4
