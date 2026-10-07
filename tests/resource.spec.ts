@@ -16,17 +16,11 @@ test('Resource Operations', async ({ page }) => {
   await page.locator('#mapMaint > img').first().click();
   await GeneralUtils.sleep(1000);
 
-  const checkType = process.env.CHECK_TYPE;
+  console.log('Running scheduled Fuel check...');
+  await fuelUtils.buyFuel();
 
-  if (checkType === 'fuel') {
-    console.log('Running scheduled Fuel check...');
-    await fuelUtils.buyFuel();
-  } else if (checkType === 'co2') {
-    console.log('Running scheduled CO2 check...');
-    await page.getByRole('button', { name: ' Co2' }).click();
-    await GeneralUtils.sleep(1000);
-    await fuelUtils.buyCo2();
-  } else {
-    throw new Error('CHECK_TYPE must be either "fuel" or "co2".');
-  }
+  console.log('Running scheduled CO2 check...');
+  await page.getByRole('button', { name: ' Co2' }).click();
+  await GeneralUtils.sleep(1000);
+  await fuelUtils.buyCo2();
 });
