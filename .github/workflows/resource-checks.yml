@@ -10,13 +10,6 @@ on:
         options:
           - fuel
           - co2
-  schedule:
-    # CO2: 02, 12, 22, 32, 42, 52 UTC
-    # Fuel: 07, 17, 27, 37, 47, 57 UTC
-    # Each resource is checked every 10 minutes, staggered by 5 minutes.
-    # Explicit minute lists are used to make the schedule unambiguous.
-    - cron: '2,12,22,32,42,52 * * * *'
-    - cron: '7,17,27,37,47,57 * * * *'
 
 concurrency:
   group: resource-checks
@@ -27,38 +20,30 @@ jobs:
     timeout-minutes: 10
     runs-on: ubuntu-22.04
     env:
-      CHECK_TYPE: ${{ github.event_name == 'workflow_dispatch' && inputs.check_type || github.event.schedule == '7,17,27,37,47,57 * * * *' && 'fuel' || 'co2' }}
-
+      CHECK_TYPE: ${{ inputs.check_type }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-
       - name: Install dependencies
         run: npm ci
-
       - name: Get Playwright version
         id: pw-version
         run: echo "version=$(npx playwright --version | awk '{print $2}')" >> $GITHUB_OUTPUT
-
       - uses: actions/cache@v4
         id: playwright-cache
         with:
           path: ~/.cache/ms-playwright
           key: ${{ runner.os }}-playwright-${{ steps.pw-version.outputs.version }}
-
       - name: Disable Man-DB Auto-Update
         run: |
           sudo debconf-set-selections <<< "man-db man-db/auto-update boolean false"
           sudo dpkg-reconfigure man-db
-
       - name: Install Playwright Browsers
         env:
           NODE_OPTIONS: "--max-old-space-size=4096"
         run: npx playwright install --with-deps chromium
-
       - name: Create .env file
         run: |
           touch .env
@@ -66,6 +51,5 @@ jobs:
           echo "PASSWORD=${{ secrets.PASSWORD }}" >> .env
           echo "MAX_FUEL_PRICE=${{ vars.MAX_FUEL_PRICE }}" >> .env
           echo "MAX_CO2_PRICE=${{ vars.MAX_CO2_PRICE }}" >> .env
-
       - name: Run Resource Check
         run: npx playwright test tests/resource.spec.ts
