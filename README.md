@@ -32,6 +32,17 @@ This repository contains a bot for Airline Manager 4, built with Playwright and 
    - Go to **Actions** and enable workflows.
 5. The workflow will now be triggered twice every hour at 01 and 31 minutes.
 
+## Reliable scheduling (external trigger)
+GitHub's own cron is best-effort and can skip many runs. For on-time runs, have an external scheduler (for example [cron-job.org](https://cron-job.org)) start the workflow through the GitHub API:
+
+- **URL:** `https://api.github.com/repos/<your-username>/<your-repo>/actions/workflows/playwright.yml/dispatches`
+- **Method:** `POST`
+- **Headers:** `Authorization: Bearer <fine-grained token>`, `Accept: application/vnd.github+json`, `Content-Type: application/json`
+- **Body:** `{"ref":"main","inputs":{"task":"resources"}}` every 15 minutes (fuel and CO2 only), and `{"ref":"main","inputs":{"task":"full"}}` every 30 minutes (everything).
+- **Token:** create a fine-grained personal access token limited to this one repository with **Actions: Read and write**. Keep it only in the scheduler, never in the repo.
+
+The built-in cron is kept as a backup, and a concurrency rule makes sure two runs never use the game account at the same time.
+
 ## Notes
 - Language of your game must be **English** for this bot to work.
 - Trigger times may vary due to heavy loads on GitHub Actions.

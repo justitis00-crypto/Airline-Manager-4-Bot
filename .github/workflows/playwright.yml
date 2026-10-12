@@ -1,8 +1,25 @@
 name: Playwright Tests
 on:
   workflow_dispatch:
+    inputs:
+      task:
+        description: 'What to run: full = everything, resources = fuel and CO2 only'
+        required: true
+        default: 'full'
+        type: choice
+        options:
+          - full
+          - resources
+  # Backup only. GitHub often delays or skips scheduled runs, so the main
+  # triggers are external calls to the workflow_dispatch API (see README).
   schedule:
-    - cron: "*/25 * * * *"
+    - cron: "17,47 * * * *"
+
+# Never run two sessions on the same game account at once.
+concurrency:
+  group: airline-bot
+  cancel-in-progress: false
+
 jobs:
   test:
     timeout-minutes: 15 
@@ -49,5 +66,11 @@ jobs:
         echo "CAMPAIGN_DURATION=${{ vars.CAMPAIGN_DURATION }}" >> .env
 
     - name: Run Playwright tests
-      run: npx playwright test
-      
+      env:
+        TASK: ${{ inputs.task || 'full' }}
+      run: |
+        if [ "$TASK" = "resources" ]; then
+          npx playwright test tests/resource.spec.ts
+        else
+          npx playwright test tests/airlineManager.spec.ts
+        fi
