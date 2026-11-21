@@ -49,3 +49,15 @@ The built-in cron is kept as a backup, and a concurrency rule makes sure two run
 - To change the schedule, edit the **cron** expression under **schedule** in `.github/workflows/playwright.yml`. Use [crontab.guru](https://crontab.guru/) to generate your desired cron expression.
 - If you don't want your repo to be public you can clone this project and commit it to your private repo.
 - For questions, reach out on Discord: `muhittin852`.
+
+## Automatic pricing
+
+Actions -> Playwright Tests -> Run workflow -> task `pricing`.
+
+1. `pricing_mode = inspect` (default): read-only, logs the page structure and the first route.
+2. `dry-run`: logs the prices it would set for `pricing_max_routes` routes, saves nothing.
+3. `live`: saves the prices. Start with a few routes, then set `pricing_max_routes` to 0 (all).
+
+Price = game auto price x multiplier (Y 1.10, J 1.08, F 1.06 by default) minus a $3 guard.
+Optional repository variables: `PRICING_GAME_MODE` (realism|easy), `PRICE_MULT_Y/J/F` (1.0-1.15), `PRICE_MARGIN`.
+Passenger routes only; cargo is skipped.
