@@ -3,13 +3,27 @@ on:
   workflow_dispatch:
     inputs:
       task:
-        description: 'What to run: full = everything, resources = fuel and CO2 only'
+        description: 'What to run: full = everything, resources = fuel and CO2 only, pricing = ticket prices (see README)'
         required: true
         default: 'full'
         type: choice
         options:
           - full
           - resources
+          - pricing
+      pricing_mode:
+        description: 'Pricing only: inspect = read-only look, dry-run = log planned prices, live = save prices'
+        required: false
+        default: 'inspect'
+        type: choice
+        options:
+          - inspect
+          - dry-run
+          - live
+      pricing_max_routes:
+        description: 'Pricing only: how many routes to process (0 = all)'
+        required: false
+        default: '3'
   # Backup only. GitHub often delays or skips scheduled runs, so the main
   # triggers are external calls to the workflow_dispatch API (see README).
   schedule:
@@ -22,7 +36,7 @@ concurrency:
 
 jobs:
   test:
-    timeout-minutes: 15 
+    timeout-minutes: 45 
     runs-on: ubuntu-22.04
     steps:
     - uses: actions/checkout@v4
@@ -64,6 +78,13 @@ jobs:
         echo "INCREASE_AIRLINE_REPUTATION=${{ vars.INCREASE_AIRLINE_REPUTATION }}" >> .env
         echo "CAMPAIGN_TYPE=${{ vars.CAMPAIGN_TYPE }}" >> .env
         echo "CAMPAIGN_DURATION=${{ vars.CAMPAIGN_DURATION }}" >> .env
+        echo "PRICING_MODE=${{ inputs.pricing_mode || 'inspect' }}" >> .env
+        echo "PRICING_MAX_ROUTES=${{ inputs.pricing_max_routes || '3' }}" >> .env
+        echo "PRICING_GAME_MODE=${{ vars.PRICING_GAME_MODE }}" >> .env
+        echo "PRICE_MULT_Y=${{ vars.PRICE_MULT_Y }}" >> .env
+        echo "PRICE_MULT_J=${{ vars.PRICE_MULT_J }}" >> .env
+        echo "PRICE_MULT_F=${{ vars.PRICE_MULT_F }}" >> .env
+        echo "PRICE_MARGIN=${{ vars.PRICE_MARGIN }}" >> .env
 
     - name: Run Playwright tests
       env:
@@ -71,6 +92,8 @@ jobs:
       run: |
         if [ "$TASK" = "resources" ]; then
           npx playwright test tests/resource.spec.ts
+        elif [ "$TASK" = "pricing" ]; then
+          npx playwright test tests/pricing.spec.ts
         else
           npx playwright test tests/airlineManager.spec.ts
         fi
