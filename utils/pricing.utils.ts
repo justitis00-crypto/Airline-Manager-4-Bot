@@ -168,7 +168,7 @@ export class PricingUtils {
         await id.waitFor({ state: 'visible', timeout: 10000 });
 
         // Distance comes from the list row (for example "9,928KM").
-        const rowText = await id.locator('xpath=ancestor::*[contains(., "KM")][1]').innerText().catch(() => '');
+        const rowText = await id.locator('xpath=ancestor::*[contains(., "KM")][1]').innerText({ timeout: 5000 }).catch(() => '');
         const km = PricingUtils.parseKm(rowText);
 
         if (!this.listInspected) {
