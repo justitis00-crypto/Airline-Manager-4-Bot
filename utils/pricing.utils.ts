@@ -168,7 +168,7 @@ export class PricingUtils {
         await id.waitFor({ state: 'visible', timeout: 10000 });
 
         // Distance comes from the list row (for example "9,928KM").
-        const rowText = await id.locator('xpath=ancestor::*[contains(., "KM")][1]').innerText({ timeout: 5000 }).catch(() => '');
+        const rowText = await id.locator('xpath=ancestor::div[starts-with(@id, "routeMainList")][1]').innerText({ timeout: 5000 }).catch(() => '');
         const km = PricingUtils.parseKm(rowText);
 
         if (!this.listInspected) {
@@ -176,7 +176,7 @@ export class PricingUtils {
         }
 
         if (km === null) {
-            console.log(`Route ${number}: skipped - could not read the distance from the list row.`);
+            console.log(`Route ${number}: skipped - could not read the distance. Row text: ${rowText.replace(/\s+/g, ' ').trim().slice(0, 200)}`);
             return 'skipped';
         }
 
@@ -184,9 +184,8 @@ export class PricingUtils {
         await GeneralUtils.sleep(1500);
 
         if (!(await this.seatHeader().isVisible())) {
-            // Some versions open the page from the aircraft link instead of the route number.
-            const row = id.locator('xpath=ancestor::*[contains(., "KM")][1]');
-            const link = row.getByText(/^\S+ - \S+$/).filter({ hasNotText: /^[A-Z]{4} - [A-Z]{4}$/ }).first();
+            // The route page may open from the aircraft link in the row instead of the route number.
+            const link = this.routeRows().nth(index).locator('a').first();
             if (await link.isVisible().catch(() => false)) {
                 await link.click();
                 await GeneralUtils.sleep(1500);
@@ -243,6 +242,10 @@ export class PricingUtils {
 
     private routeIds(): Locator {
         return this.popup.getByText(/^#[\w-]+$/);
+    }
+
+    private routeRows(): Locator {
+        return this.popup.locator('div[id^="routeMainList"]');
     }
 
     private seatHeader(): Locator {
@@ -333,7 +336,7 @@ export class PricingUtils {
         console.log(`route ids found: ${await this.routeIds().count()}`);
         if (id) {
             console.log(`route id element: ${await this.chain(id)}`);
-            console.log(`row element: ${await this.chain(id.locator('xpath=ancestor::*[contains(., "KM")][1]'))}`);
+            console.log(`row element: ${await this.chain(id.locator('xpath=ancestor::div[starts-with(@id, "routeMainList")][1]'))}`);
             console.log(`row text: ${rowText.replace(/\s+/g, ' ').trim().slice(0, 160)}`);
         }
         console.log(`"Next" element: ${await this.chain(this.popup.getByText('Next', { exact: true }))}`);
