@@ -61,3 +61,7 @@ Actions -> Playwright Tests -> Run workflow -> task `pricing`.
 Price = game auto price x multiplier (Y 1.10, J 1.08, F 1.06 by default) minus a $3 guard.
 Optional repository variables: `PRICING_GAME_MODE` (realism|easy), `PRICE_MULT_Y/J/F` (1.0-1.15), `PRICE_MARGIN`.
 Passenger routes only; cargo is skipped.
+
+Notes on pricing: only routes whose aircraft is on the ground show a distance, so only those are priced; routes in
+flight are skipped and picked up on a later run. Prices set by hand (outside 0.99x-1.20x of auto) are left alone;
+prices far below auto are repaired. Routes are found by name, not position, because the list reorders as planes land.

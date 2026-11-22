@@ -21,6 +21,8 @@ export interface PricingOptions {
     margin: number;        // dollars subtracted as a rounding guard
 }
 
+interface ListRow { key: string; km: number | null; flying: boolean; page: number; }
+
 export class PricingUtils {
     // Auto price formulas (slope * km + intercept) for passenger aircraft.
     // Source: community AM4 formulae page (abc8747.github.io/am4/formulae).
@@ -102,96 +104,155 @@ export class PricingUtils {
         return `Y ${p.y} / J ${p.j} / F ${p.f}`;
     }
 
+    // ---------- Decision logic (no page needed) ----------
+
+    /**
+     * Decides what to do with a route, using the distance from the route list and the prices on the page.
+     * - prices within 0.99x-1.20x of the game's auto price: ours (or untouched) -> set / keep the target
+     * - prices below 0.6x the auto price: clearly broken -> repair to the target
+     * - anything else: probably set by hand -> leave alone
+     */
+    public static decide(current: Prices, km: number, o: PricingOptions): { action: 'set' | 'same' | 'skip'; target: Prices; note: string } {
+        const auto = PricingUtils.autoPrices(km, o.gameMode);
+        const target = PricingUtils.targetPrices(auto, o.multipliers, o.margin);
+        const ratios = [current.y / auto.y, current.j / auto.j, current.f / auto.f];
+        const inBand = ratios.every(r => r >= 0.99 && r <= 1.20);
+
+        if (inBand) {
+            const same = current.y === target.y && current.j === target.j && current.f === target.f;
+            return { action: same ? 'same' : 'set', target, note: same ? 'already at target' : '' };
+        }
+        if (current.y < 0.6 * auto.y) {
+            return { action: 'set', target, note: `REPAIR (prices were far below auto ${PricingUtils.fmt(auto)})` };
+        }
+        return { action: 'skip', target, note: `left alone: prices are outside the normal range (auto is ${PricingUtils.fmt(auto)}); set by hand?` };
+    }
+
+    /** "#ET-0026 BKPR - OMRK ET-060 - MC-21-400": identifies one route row whatever its position in the list. */
+    public static rowKey(text: string): string | null {
+        const t = text.replace(/\s+/g, ' ').trim();
+        const start = t.indexOf('#');
+        if (start < 0) return null;
+        const rest = t.slice(start);
+        const cut = rest.search(/\s(Demand|Onboard):/);
+        return (cut > 0 ? rest.slice(0, cut) : rest).trim();
+    }
+
     // ---------- Main flow ----------
+
+    private static readonly TIME_LIMIT_MS = 33 * 60 * 1000;
 
     public async run(): Promise<void> {
         const o = this.options;
+        const started = Date.now();
         console.log(`Pricing mode: ${o.mode} | game: ${o.gameMode} | max routes: ${o.maxRoutes === 0 ? 'all' : o.maxRoutes}`);
         console.log(`Multipliers Y/J/F: ${o.multipliers.y} / ${o.multipliers.j} / ${o.multipliers.f} | margin: $${o.margin}`);
+        console.log('Only routes whose aircraft is on the ground are priced; routes in flight are skipped (their row shows no distance).');
 
         await this.openRoutes();
+        console.log(`Routes in game: ${(await this.readRouteTotal()) ?? 'unknown'}`);
 
-        const total = await this.readRouteTotal();
-        const pageSize = await this.routeIds().count();
-        console.log(`Routes in game: ${total ?? 'unknown'} | routes on first page: ${pageSize}`);
+        const done = new Set<string>();
+        const stats = { changed: 0, same: 0, skipped: 0, flying: 0, failed: 0 };
+        const limit = o.mode === 'inspect' ? 1 : (o.maxRoutes === 0 ? Infinity : o.maxRoutes);
+        let handled = 0, consecutiveFailures = 0, startPage = 1;
 
-        if (pageSize === 0) {
-            await this.inspectList(null);
-            throw new Error('Could not find any routes in the list (see the structure lines above).');
-        }
+        while (handled < limit) {
+            if (Date.now() - started > PricingUtils.TIME_LIMIT_MS) {
+                console.log('Time limit reached. Run again to continue; routes already at target are quick.');
+                break;
+            }
 
-        const routeCount = total ?? pageSize;
-        let limit = o.maxRoutes === 0 ? routeCount : Math.min(routeCount, o.maxRoutes);
-        if (o.mode === 'inspect') limit = Math.min(limit, 1);
+            let row = await this.scan(startPage, Infinity, done, stats);
+            if (!row && startPage > 1) {
+                await this.closeModal();
+                await this.openRoutes();
+                row = await this.scan(1, startPage - 1, done, stats);
+            }
+            if (!row) break;
 
-        let changed = 0, same = 0, skipped = 0, failed = 0, consecutiveFailures = 0;
-
-        for (let k = 0; k < limit; k++) {
-            const pageNo = Math.floor(k / pageSize) + 1;
-            const index = k % pageSize;
+            startPage = row.page;
+            done.add(row.key);
+            handled++;
 
             try {
-                if (k > 0) {
-                    await this.closeModal();
-                    await this.openRoutes();
-                }
-                await this.goToListPage(pageNo);
-
-                const result = await this.processRoute(k + 1, index);
-                if (result === 'changed') changed++;
-                else if (result === 'same') same++;
-                else skipped++;
+                const result = await this.processRow(handled, row);
+                stats[result]++;
                 consecutiveFailures = 0;
             } catch (error) {
-                failed++;
+                stats.failed++;
                 consecutiveFailures++;
                 const message = (error instanceof Error ? error.message : String(error)).split('\n')[0];
-                console.log(`Route ${k + 1}: FAILED - ${message}`);
-                await this.inspectDetail();
-
+                console.log(`Route ${handled}: FAILED - ${message}`);
+                await this.inspectDetail(true);
                 if (consecutiveFailures >= 3) {
                     console.log('Stopping: 3 routes failed in a row.');
                     break;
                 }
             }
+
+            await this.closeModal();
+            await this.openRoutes();
         }
 
-        console.log(`Pricing finished. ${o.mode === 'live' ? 'Updated' : 'Would update'}: ${changed} | already at target: ${same} | skipped: ${skipped} | failed: ${failed}`);
-
-        if (failed > 0) {
-            throw new Error(`${failed} route(s) failed. See the log above.`);
+        const verb = o.mode === 'live' ? 'Updated' : 'Would update';
+        console.log(`Pricing finished. ${verb}: ${stats.changed} | already at target: ${stats.same} | left alone: ${stats.skipped} | in flight (skipped): ${stats.flying} | failed: ${stats.failed}`);
+        if (stats.failed > 0) {
+            throw new Error(`${stats.failed} route(s) failed. See the log above.`);
         }
     }
 
-    private async processRoute(number: number, index: number): Promise<'changed' | 'same' | 'skipped'> {
-        const id = this.routeIds().nth(index);
-        await id.waitFor({ state: 'visible', timeout: 10000 });
+    /** Walks the list pages from..to (list must be open on page 1) and returns the first route not handled yet. */
+    private async scan(from: number, to: number, done: Set<string>, stats: { flying: number }): Promise<ListRow | null> {
+        let previous = '';
+        for (let page = 1; page <= to; page++) {
+            if (page > 1 && !(await this.nextPage(previous))) return null;
 
-        // Distance comes from the list row (for example "9,928KM").
-        const rowText = await id.locator('xpath=ancestor::div[starts-with(@id, "routeMainList")][1]').innerText({ timeout: 5000 }).catch(() => '');
-        const km = PricingUtils.parseKm(rowText);
+            const rows = await this.readRows();
+            previous = rows.map(r => r.key).join('|');
+            if (page < from) continue;
+
+            for (const r of rows) {
+                if (done.has(r.key)) continue;
+                if (r.flying || r.km === null) {
+                    done.add(r.key);
+                    stats.flying++;
+                    continue;
+                }
+                return { ...r, page };
+            }
+        }
+        return null;
+    }
+
+    private async processRow(number: number, row: ListRow): Promise<'changed' | 'same' | 'skipped' | 'flying'> {
+        const o = this.options;
+
+        // The list is already on the page where the row was found. Find it again by name (positions move).
+        const rows = this.routeRows();
+        const count = await rows.count();
+        let index = -1;
+        for (let i = 0; i < count; i++) {
+            const text = await rows.nth(i).innerText({ timeout: 3000 }).catch(() => '');
+            if (PricingUtils.rowKey(text) === row.key) { index = i; break; }
+        }
+        if (index < 0) throw new Error('route is no longer on that list page (the list moved)');
 
         if (!this.listInspected) {
-            await this.inspectList(id, rowText);
+            this.listInspected = true;
+            console.log(`List structure: row=${await this.chain(rows.nth(index))}`);
         }
 
-        if (km === null) {
-            console.log(`Route ${number}: skipped - could not read the distance. Row text: ${rowText.replace(/\s+/g, ' ').trim().slice(0, 200)}`);
-            return 'skipped';
-        }
-
-        await id.click();
+        await rows.nth(index).getByText(/^#[\w-]+$/).first().click();
         await GeneralUtils.sleep(1500);
 
         if (!(await this.seatHeader().isVisible())) {
-            // The route page may open from the aircraft link in the row instead of the route number.
-            const link = this.routeRows().nth(index).locator('a').first();
+            const link = rows.nth(index).locator('a').first();
             if (await link.isVisible().catch(() => false)) {
                 await link.click();
                 await GeneralUtils.sleep(1500);
             }
         }
-
         if (!(await this.seatHeader().isVisible())) {
             throw new Error('Could not open the route page (no "Seat layout" section found).');
         }
@@ -200,38 +261,58 @@ export class PricingUtils {
         await this.inspectDetail(true);
 
         const inputs = this.priceInputs();
-        const count = await inputs.count();
-        if (count !== 3) {
-            console.log(`Route ${number}: skipped - found ${count} price boxes (expected 3 for a passenger aircraft).`);
+        const inputCount = await inputs.count();
+        if (inputCount !== 3) {
+            console.log(`Route ${number}: ${row.key} | skipped - found ${inputCount} price boxes (expected 3 for a passenger aircraft).`);
             return 'skipped';
         }
 
         const current = await this.readPrices(inputs);
-        const auto = PricingUtils.autoPrices(km, this.options.gameMode);
-        const target = PricingUtils.targetPrices(auto, this.options.multipliers, this.options.margin);
+        const decision = PricingUtils.decide(current, row.km as number, o);
+        const line = `Route ${number}: ${row.key} | ${row.km} km | now ${PricingUtils.fmt(current)} | target ${PricingUtils.fmt(decision.target)}`;
 
-        const line = `Route ${number}: ${km} km | now ${PricingUtils.fmt(current)} | auto ${PricingUtils.fmt(auto)} | target ${PricingUtils.fmt(target)}`;
+        if (decision.action === 'same') { console.log(`${line} | ${decision.note}`); return 'same'; }
+        if (decision.action === 'skip') { console.log(`${line} | ${decision.note}`); return 'skipped'; }
 
-        if (current.y === target.y && current.j === target.j && current.f === target.f) {
-            console.log(`${line} | already at target`);
-            return 'same';
-        }
-
-        if (this.options.mode !== 'live') {
-            console.log(`${line} | WOULD CHANGE (${this.options.mode}, nothing saved)`);
+        const note = decision.note ? ` ${decision.note}` : '';
+        if (o.mode !== 'live') {
+            console.log(`${line} | WOULD CHANGE (${o.mode}, nothing saved)${note}`);
             return 'changed';
         }
 
-        await inputs.nth(0).fill(String(target.y));
-        await inputs.nth(1).fill(String(target.j));
-        await inputs.nth(2).fill(String(target.f));
+        const t = decision.target;
+        await inputs.nth(0).fill(String(t.y));
+        await inputs.nth(1).fill(String(t.j));
+        await inputs.nth(2).fill(String(t.f));
         await this.saveButton().click();
         await GeneralUtils.sleep(1500);
 
         const after = await this.readPrices(this.priceInputs());
-        const ok = after.y === target.y && after.j === target.j && after.f === target.f;
-        console.log(`${line} | SAVED${ok ? '' : ` (WARNING: page now shows ${PricingUtils.fmt(after)})`}`);
+        const ok = after.y === t.y && after.j === t.j && after.f === t.f;
+        console.log(`${line} | SAVED${ok ? '' : ` (WARNING: page now shows ${PricingUtils.fmt(after)})`}${note}`);
         return 'changed';
+    }
+
+    private async readRows(): Promise<ListRow[]> {
+        const texts = await this.routeRows().allInnerTexts();
+        const rows: ListRow[] = [];
+        for (const t of texts) {
+            const key = PricingUtils.rowKey(t);
+            if (key) rows.push({ key, km: PricingUtils.parseKm(t), flying: /Onboard:/.test(t), page: 0 });
+        }
+        return rows;
+    }
+
+    private async nextPage(previous: string): Promise<boolean> {
+        try {
+            await this.popup.getByText('Next', { exact: true }).first().click({ timeout: 5000 });
+        } catch {
+            return false;
+        }
+        await GeneralUtils.sleep(1200);
+        if (previous === '') return true;
+        const now = (await this.readRows()).map(r => r.key).join('|');
+        return now !== '' && now !== previous;
     }
 
     // ---------- Page helpers ----------
@@ -240,9 +321,6 @@ export class PricingUtils {
         return this.page.locator('#popup');
     }
 
-    private routeIds(): Locator {
-        return this.popup.getByText(/^#[\w-]+$/);
-    }
 
     private routeRows(): Locator {
         return this.popup.locator('div[id^="routeMainList"]');
@@ -278,12 +356,6 @@ export class PricingUtils {
         await GeneralUtils.sleep(800);
     }
 
-    private async goToListPage(pageNo: number) {
-        for (let i = 1; i < pageNo; i++) {
-            await this.popup.getByText('Next', { exact: true }).first().click();
-            await GeneralUtils.sleep(1500);
-        }
-    }
 
     private async ensureSeatPanelOpen() {
         if ((await this.priceInputs().count()) === 0) {
@@ -330,20 +402,6 @@ export class PricingUtils {
         }
     }
 
-    private async inspectList(id: Locator | null, rowText = '') {
-        this.listInspected = true;
-        console.log('--- STRUCTURE: routes list ---');
-        console.log(`route ids found: ${await this.routeIds().count()}`);
-        if (id) {
-            console.log(`route id element: ${await this.chain(id)}`);
-            console.log(`row element: ${await this.chain(id.locator('xpath=ancestor::div[starts-with(@id, "routeMainList")][1]'))}`);
-            console.log(`row text: ${rowText.replace(/\s+/g, ' ').trim().slice(0, 160)}`);
-        }
-        console.log(`"Next" element: ${await this.chain(this.popup.getByText('Next', { exact: true }))}`);
-        const links = (await this.popup.locator('a').allInnerTexts().catch(() => [] as string[])).map(t => t.trim()).filter(Boolean).slice(0, 8);
-        console.log(`first links: ${JSON.stringify(links)}`);
-        console.log('--- END STRUCTURE ---');
-    }
 
     private async inspectDetail(onlyOnce = false) {
         if (onlyOnce && this.detailInspected) return;
