@@ -112,8 +112,12 @@ export class PricingUtils {
      * - prices below 0.6x the auto price: clearly broken -> repair to the target
      * - anything else: probably set by hand -> leave alone
      */
-    public static decide(current: Prices, km: number, o: PricingOptions): { action: 'set' | 'same' | 'skip'; target: Prices; note: string } {
-        const auto = PricingUtils.autoPrices(km, o.gameMode);
+    public static decide(current: Prices, km: number, o: PricingOptions) {
+        return PricingUtils.decideFromAuto(current, PricingUtils.autoPrices(km, o.gameMode), o);
+    }
+
+    /** Same decision, but with the game's own auto price (read from the Auto button) instead of a formula. */
+    public static decideFromAuto(current: Prices, auto: Prices, o: PricingOptions): { action: 'set' | 'same' | 'skip'; target: Prices; note: string } {
         const target = PricingUtils.targetPrices(auto, o.multipliers, o.margin);
         const ratios = [current.y / auto.y, current.j / auto.j, current.f / auto.f];
         const inBand = ratios.every(r => r >= 0.99 && r <= 1.20);
@@ -268,29 +272,64 @@ export class PricingUtils {
         }
 
         const current = await this.readPrices(inputs);
-        const decision = PricingUtils.decide(current, row.km as number, o);
-        const line = `Route ${number}: ${row.key} | ${row.km} km | now ${PricingUtils.fmt(current)} | target ${PricingUtils.fmt(decision.target)}`;
+        const formulaAuto = PricingUtils.autoPrices(row.km as number, o.gameMode);
 
-        if (decision.action === 'same') { console.log(`${line} | ${decision.note}`); return 'same'; }
-        if (decision.action === 'skip') { console.log(`${line} | ${decision.note}`); return 'skipped'; }
+        // Dry runs never touch the page, so they use the formula. Live runs ask the game itself.
+        let auto = formulaAuto;
+        let source = 'formula';
+        if (o.mode === 'live') {
+            await this.autoButton().first().click();
+            await GeneralUtils.sleep(800);
+            const fromGame = await this.readPrices(this.priceInputs());
+            const valid = [fromGame.y, fromGame.j, fromGame.f].every(v => Number.isFinite(v) && v > 0);
+            if (!valid) {
+                await this.restorePrices(current, true);
+                throw new Error('The Auto button did not give usable prices; route left as it was.');
+            }
+            auto = fromGame;
+            source = 'game';
+            if (Math.abs(fromGame.y - formulaAuto.y) > Math.max(3, formulaAuto.y * 0.02)) {
+                console.log(`  note: game auto ${PricingUtils.fmt(fromGame)} differs from formula ${PricingUtils.fmt(formulaAuto)}; using the game's.`);
+            }
+        }
 
+        const decision = PricingUtils.decideFromAuto(current, auto, o);
+        const line = `Route ${number}: ${row.key} | ${row.km} km | now ${PricingUtils.fmt(current)} | auto(${source}) ${PricingUtils.fmt(auto)} | target ${PricingUtils.fmt(decision.target)}`;
         const note = decision.note ? ` ${decision.note}` : '';
+
+        if (decision.action !== 'set') {
+            if (o.mode === 'live') await this.restorePrices(current, true);
+            console.log(`${line} | ${decision.note}`);
+            return decision.action === 'same' ? 'same' : 'skipped';
+        }
+
         if (o.mode !== 'live') {
             console.log(`${line} | WOULD CHANGE (${o.mode}, nothing saved)${note}`);
             return 'changed';
         }
 
         const t = decision.target;
-        await inputs.nth(0).fill(String(t.y));
-        await inputs.nth(1).fill(String(t.j));
-        await inputs.nth(2).fill(String(t.f));
-        await this.saveButton().click();
-        await GeneralUtils.sleep(1500);
-
+        await this.fillAndSave(t);
         const after = await this.readPrices(this.priceInputs());
         const ok = after.y === t.y && after.j === t.j && after.f === t.f;
         console.log(`${line} | SAVED${ok ? '' : ` (WARNING: page now shows ${PricingUtils.fmt(after)})`}${note}`);
         return 'changed';
+    }
+
+    private async fillAndSave(p: Prices) {
+        const inputs = this.priceInputs();
+        await inputs.nth(0).fill(String(p.y));
+        await inputs.nth(1).fill(String(p.j));
+        await inputs.nth(2).fill(String(p.f));
+        await this.saveButton().click();
+        await GeneralUtils.sleep(1500);
+    }
+
+    /** Puts the original prices back (and saves them), in case the Auto button changed or saved anything. */
+    private async restorePrices(original: Prices, save: boolean) {
+        const now = await this.readPrices(this.priceInputs()).catch(() => null);
+        if (now && now.y === original.y && now.j === original.j && now.f === original.f) return;
+        if (save) await this.fillAndSave(original);
     }
 
     private async readRows(): Promise<ListRow[]> {
