@@ -116,20 +116,33 @@ export class PricingUtils {
         return PricingUtils.decideFromAuto(current, PricingUtils.autoPrices(km, o.gameMode), o);
     }
 
-    /** Same decision, but with the game's own auto price (read from the Auto button) instead of a formula. */
+    /**
+     * Same decision, but with the game's own auto price (read from the Auto button) instead of a formula.
+     * Each class (Y, J, F) is judged on its own:
+     * - 0.99x-1.20x of auto: ours -> set to the target
+     * - below 0.6x auto: clearly broken -> repair to the target
+     * - anything else: set by hand -> keep what is there
+     */
     public static decideFromAuto(current: Prices, auto: Prices, o: PricingOptions): { action: 'set' | 'same' | 'skip'; target: Prices; note: string } {
-        const target = PricingUtils.targetPrices(auto, o.multipliers, o.margin);
-        const ratios = [current.y / auto.y, current.j / auto.j, current.f / auto.f];
-        const inBand = ratios.every(r => r >= 0.99 && r <= 1.20);
+        const wanted = PricingUtils.targetPrices(auto, o.multipliers, o.margin);
+        const pick = (cur: number, a: number, w: number) => {
+            const r = cur / a;
+            if (r >= 0.99 && r <= 1.20) return { value: w, repaired: false, kept: false };
+            if (r < 0.6) return { value: w, repaired: true, kept: false };
+            return { value: cur, repaired: false, kept: true };
+        };
+        const y = pick(current.y, auto.y, wanted.y);
+        const j = pick(current.j, auto.j, wanted.j);
+        const f = pick(current.f, auto.f, wanted.f);
+        const target = { y: y.value, j: j.value, f: f.value };
 
-        if (inBand) {
-            const same = current.y === target.y && current.j === target.j && current.f === target.f;
-            return { action: same ? 'same' : 'set', target, note: same ? 'already at target' : '' };
-        }
-        if (current.y < 0.6 * auto.y) {
-            return { action: 'set', target, note: `REPAIR (prices were far below auto ${PricingUtils.fmt(auto)})` };
-        }
-        return { action: 'skip', target, note: `left alone: prices are outside the normal range (auto is ${PricingUtils.fmt(auto)}); set by hand?` };
+        const notes: string[] = [];
+        if (y.repaired || j.repaired || f.repaired) notes.push(`REPAIR (${[y.repaired && 'Y', j.repaired && 'J', f.repaired && 'F'].filter(Boolean).join('/')} were far below auto ${PricingUtils.fmt(auto)})`);
+        if (y.kept || j.kept || f.kept) notes.push(`kept by hand: ${[y.kept && 'Y', j.kept && 'J', f.kept && 'F'].filter(Boolean).join('/')}`);
+
+        const same = target.y === current.y && target.j === current.j && target.f === current.f;
+        if (same) return { action: y.kept && j.kept && f.kept ? 'skip' : 'same', target, note: notes.join('; ') || 'already at target' };
+        return { action: 'set', target, note: notes.join('; ') };
     }
 
     /** "#ET-0026 BKPR - OMRK ET-060 - MC-21-400": identifies one route row whatever its position in the list. */
@@ -279,18 +292,14 @@ export class PricingUtils {
         let source = 'formula';
         if (o.mode === 'live') {
             await this.autoButton().first().click();
-            await GeneralUtils.sleep(800);
-            const fromGame = await this.readPrices(this.priceInputs());
-            const valid = [fromGame.y, fromGame.j, fromGame.f].every(v => Number.isFinite(v) && v > 0);
-            if (!valid) {
+            // The game fills the three boxes one after another; wait until they match the distance formula.
+            const fromGame = await this.waitForAutoPrices(formulaAuto);
+            if (!fromGame) {
                 await this.restorePrices(current, true);
-                throw new Error('The Auto button did not give usable prices; route left as it was.');
+                throw new Error(`The Auto prices did not settle or do not match ${row.km} km; route left as it was.`);
             }
             auto = fromGame;
             source = 'game';
-            if (Math.abs(fromGame.y - formulaAuto.y) > Math.max(3, formulaAuto.y * 0.02)) {
-                console.log(`  note: game auto ${PricingUtils.fmt(fromGame)} differs from formula ${PricingUtils.fmt(formulaAuto)}; using the game's.`);
-            }
         }
 
         const decision = PricingUtils.decideFromAuto(current, auto, o);
@@ -310,10 +319,33 @@ export class PricingUtils {
 
         const t = decision.target;
         await this.fillAndSave(t);
-        const after = await this.readPrices(this.priceInputs());
-        const ok = after.y === t.y && after.j === t.j && after.f === t.f;
-        console.log(`${line} | SAVED${ok ? '' : ` (WARNING: page now shows ${PricingUtils.fmt(after)})`}${note}`);
-        return 'changed';
+        await GeneralUtils.sleep(1200);
+        let after = await this.readPrices(this.priceInputs());
+        let ok = after.y === t.y && after.j === t.j && after.f === t.f;
+        if (!ok) {
+            await this.fillAndSave(t);
+            await GeneralUtils.sleep(1200);
+            after = await this.readPrices(this.priceInputs());
+            ok = after.y === t.y && after.j === t.j && after.f === t.f;
+        }
+        console.log(`${line} | ${ok ? 'SAVED' : `NOT CONFIRMED (page shows ${PricingUtils.fmt(after)})`}${note}`);
+        return ok ? 'changed' : 'skipped';
+    }
+
+    /** Polls the three boxes until they match the expected auto prices (and stay that way). */
+    private async waitForAutoPrices(expected: Prices): Promise<Prices | null> {
+        const close = (a: number, b: number) => Math.abs(a - b) <= Math.max(4, b * 0.005);
+        const matches = (p: Prices) => close(p.y, expected.y) && close(p.j, expected.j) && close(p.f, expected.f);
+        for (let i = 0; i < 16; i++) {
+            await GeneralUtils.sleep(500);
+            const p = await this.readPrices(this.priceInputs());
+            if (matches(p)) {
+                await GeneralUtils.sleep(700);
+                const again = await this.readPrices(this.priceInputs());
+                if (matches(again) && again.y === p.y && again.j === p.j && again.f === p.f) return again;
+            }
+        }
+        return null;
     }
 
     private async fillAndSave(p: Prices) {
