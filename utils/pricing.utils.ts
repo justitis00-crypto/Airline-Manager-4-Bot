@@ -200,7 +200,7 @@ export class PricingUtils {
                 stats.failed++;
                 consecutiveFailures++;
                 const message = (error instanceof Error ? error.message : String(error)).split('\n')[0];
-                console.log(`Route ${handled}: FAILED - ${message}`);
+                console.log(`Route ${handled}: ${row.key} | FAILED - ${message}`);
                 await this.inspectDetail(true);
                 if (consecutiveFailures >= 3) {
                     console.log('Stopping: 3 routes failed in a row.');
@@ -291,12 +291,19 @@ export class PricingUtils {
         let auto = formulaAuto;
         let source = 'formula';
         if (o.mode === 'live') {
+            // Nothing to change according to the (verified) formula: skip the slow Auto step.
+            const quick = PricingUtils.decideFromAuto(current, formulaAuto, o);
+            if (quick.action !== 'set') {
+                console.log(`Route ${number}: ${row.key} | ${row.km} km | now ${PricingUtils.fmt(current)} | ${quick.note}`);
+                return quick.action === 'same' ? 'same' : 'skipped';
+            }
             await this.autoButton().first().click();
             // The game fills the three boxes one after another; wait until they match the distance formula.
             const fromGame = await this.waitForAutoPrices(formulaAuto);
             if (!fromGame) {
+                const seen = await this.readPrices(this.priceInputs()).catch(() => null);
                 await this.restorePrices(current, true);
-                throw new Error(`The Auto prices did not settle or do not match ${row.km} km; route left as it was.`);
+                throw new Error(`Auto prices do not match ${row.km} km: formula ${PricingUtils.fmt(formulaAuto)}, page showed ${seen ? PricingUtils.fmt(seen) : 'nothing'}, route had ${PricingUtils.fmt(current)}; route left as it was.`);
             }
             auto = fromGame;
             source = 'game';
