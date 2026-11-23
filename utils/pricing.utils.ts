@@ -157,7 +157,7 @@ export class PricingUtils {
 
     // ---------- Main flow ----------
 
-    private static readonly TIME_LIMIT_MS = 33 * 60 * 1000;
+    private static readonly TIME_LIMIT_MS = 36 * 60 * 1000;
 
     public async run(): Promise<void> {
         const o = this.options;
@@ -299,14 +299,17 @@ export class PricingUtils {
             }
             await this.autoButton().first().click();
             // The game fills the three boxes one after another; wait until they match the distance formula.
-            const fromGame = await this.waitForAutoPrices(formulaAuto);
-            if (!fromGame) {
+            const settled = await this.waitForAutoPrices();
+            if (!settled) {
                 const seen = await this.readPrices(this.priceInputs()).catch(() => null);
                 await this.restorePrices(current, true);
-                throw new Error(`Auto prices do not match ${row.km} km: formula ${PricingUtils.fmt(formulaAuto)}, page showed ${seen ? PricingUtils.fmt(seen) : 'nothing'}, route had ${PricingUtils.fmt(current)}; route left as it was.`);
+                throw new Error(`Auto prices never settled into a consistent set: page showed ${seen ? PricingUtils.fmt(seen) : 'nothing'}, route had ${PricingUtils.fmt(current)}; route left as it was.`);
             }
-            auto = fromGame;
+            auto = settled.prices;
             source = 'game';
+            if (Math.abs(settled.km - (row.km as number)) > 30) {
+                console.log(`  note: the game prices this route as ${settled.km} km but the list says ${row.km} km; using the game's prices.`);
+            }
         }
 
         const decision = PricingUtils.decideFromAuto(current, auto, o);
@@ -339,17 +342,29 @@ export class PricingUtils {
         return ok ? 'changed' : 'skipped';
     }
 
-    /** Polls the three boxes until they match the expected auto prices (and stay that way). */
-    private async waitForAutoPrices(expected: Prices): Promise<Prices | null> {
-        const close = (a: number, b: number) => Math.abs(a - b) <= Math.max(4, b * 0.005);
-        const matches = (p: Prices) => close(p.y, expected.y) && close(p.j, expected.j) && close(p.f, expected.f);
+    /**
+     * Polls the three boxes until they form a complete, consistent auto price for ONE distance
+     * (the game fills Y and J first and F a moment later) and stay that way.
+     */
+    private async waitForAutoPrices(): Promise<{ prices: Prices; km: number } | null> {
+        const f = PricingUtils.FORMULAS[this.options.gameMode];
+        const kmFor = (p: Prices): number | null => {
+            const low = Math.floor((p.y - f.y[1] - 1) / f.y[0]);
+            const high = Math.ceil((p.y - f.y[1]) / f.y[0]);
+            for (let km = Math.max(1, low); km <= high; km++) {
+                const a = PricingUtils.autoPrices(km, this.options.gameMode);
+                if (a.y === p.y && a.j === p.j && a.f === p.f) return km;
+            }
+            return null;
+        };
         for (let i = 0; i < 16; i++) {
             await GeneralUtils.sleep(500);
             const p = await this.readPrices(this.priceInputs());
-            if (matches(p)) {
+            const km = kmFor(p);
+            if (km !== null) {
                 await GeneralUtils.sleep(700);
                 const again = await this.readPrices(this.priceInputs());
-                if (matches(again) && again.y === p.y && again.j === p.j && again.f === p.f) return again;
+                if (again.y === p.y && again.j === p.j && again.f === p.f) return { prices: again, km };
             }
         }
         return null;
