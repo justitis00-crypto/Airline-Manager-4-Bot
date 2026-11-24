@@ -112,38 +112,48 @@ export class RoutingUtils {
 
         const taken = new Set<string>();
         let handled = 0;
+        let finished = false;
 
-        while (handled < o.maxPlanes) {
-            const count = await this.openParkedList();
-            if (count === 0) {
-                console.log(handled === 0 ? 'No parked aircraft found. Nothing to do.' : 'No more parked aircraft.');
-                break;
+        // New aircraft normally wait under "Parked"; "Pending" is checked as well in case they show up there.
+        for (const tab of ['Parked', 'Pending']) {
+            if (handled >= o.maxPlanes || finished) break;
+
+            const names = await this.openList(tab);
+            console.log(`${tab} tab: ${names.length} aircraft ${JSON.stringify(names.slice(0, 12))}`);
+            if (names.length === 0) continue;
+
+            for (let i = 0; i < Math.min(names.length, 8) && handled < o.maxPlanes && !finished; i++) {
+                if (i > 0) await this.openList(tab);
+
+                await this.planeRows().nth(i).click();
+                await GeneralUtils.sleep(1500);
+
+                if (!(await this.byText('Intl route').isVisible().catch(() => false))) {
+                    console.log(`${tab} aircraft ${i + 1} (${names[i]}): no "Intl route" button, so it cannot be given a route now. Skipping.`);
+                    continue;
+                }
+                console.log(`Using ${tab.toLowerCase()} aircraft ${names[i]}.`);
+
+                const chosen = await this.findRoute(taken);
+                handled++;
+
+                if (!chosen) {
+                    console.log('No suggestion met the rules within the attempt limit (or inspect mode). Nothing created.');
+                    finished = true;
+                    break;
+                }
+                taken.add(`${chosen.from}-${chosen.to}`);
+                if (o.mode === 'live') {
+                    console.log('Taking this route: pressing Next, which creates it.');
+                    await this.byText('Next').click();
+                    await GeneralUtils.sleep(2000);
+                    await this.logStructure('screen after Next');
+                    finished = true;
+                }
             }
-            console.log(`Parked aircraft found: ${count}`);
-
-            await this.parkedRows().nth(handled).click();
-            await GeneralUtils.sleep(1500);
-            const planeText = await this.near('New route', 0, 400);
-            console.log(`Aircraft panel: ${planeText.slice(0, 160)}`);
-
-            const chosen = await this.findRoute(taken);
-            handled++;
-
-            if (!chosen) {
-                console.log('No suggestion met the rules within the attempt limit. Run again later or raise the attempts.');
-                break;
-            }
-            taken.add(`${chosen.from}-${chosen.to}`);
-            if (o.mode === 'live') {
-                console.log('Taking this route: pressing Next, which creates it.');
-                await this.byText('Next').click();
-                await GeneralUtils.sleep(2000);
-                await this.logStructure('screen after Next');
-                break;
-            }
-            break;
         }
 
+        if (handled === 0) console.log('No aircraft could be given a route. Nothing to do.');
         console.log(`Routing finished (${o.mode}).`);
     }
 
@@ -182,33 +192,31 @@ export class RoutingUtils {
         return this.page.getByText(label, { exact: true }).first();
     }
 
-    private parkedRows(): Locator {
-        // The status may sit in its own element or inside a longer row text, so match it as a word.
-        return this.page.getByText(/\bPARKED\b/);
+    /** Aircraft names shown in the list on the left (only the ones you can currently see). */
+    private planeRows(): Locator {
+        return this.page.locator('text=/^ET-[\\w-]+$/ >> visible=true');
     }
 
-    /** Opens the aircraft list on the left and shows the Parked tab. Returns how many parked aircraft there are. */
-    private async openParkedList(): Promise<number> {
-        const tab = this.byText('Parked');
+    /** Opens one tab of the aircraft list (Parked, Pending...) and returns the aircraft names it shows. */
+    private async openList(tabName: string): Promise<string[]> {
+        let tab = this.byText(tabName);
         if (!(await tab.isVisible().catch(() => false))) {
-            await this.logStructure('page without a Parked tab');
-            throw new Error('Could not find the "Parked" tab of the aircraft list.');
+            // An aircraft panel is open: its "List" button goes back to the list.
+            await this.byText('List').click({ timeout: 3000 }).catch(() => undefined);
+            await GeneralUtils.sleep(1000);
+            tab = this.byText(tabName);
+        }
+        if (!(await tab.isVisible().catch(() => false))) {
+            await this.logStructure(`page without a ${tabName} tab`);
+            throw new Error(`Could not find the "${tabName}" tab of the aircraft list.`);
         }
         await tab.click();
+        await GeneralUtils.sleep(2000);
 
-        let count = 0;
-        for (let i = 0; i < 8; i++) {
-            await GeneralUtils.sleep(1000);
-            count = await this.parkedRows().count();
-            if (count > 0) break;
-        }
-        if (count === 0) {
-            const planes = (await this.page.getByText(/\bET-[\w-]+/).allInnerTexts().catch(() => [] as string[]))
-                .map(t => t.replace(/\s+/g, ' ').trim()).filter(t => t.length < 80).slice(0, 12);
-            console.log(`Nothing marked PARKED after opening the Parked tab. Aircraft texts on screen: ${JSON.stringify(planes)}`);
-            await this.logStructure('Parked tab without rows');
-        }
-        return count;
+        const names = (await this.planeRows().allInnerTexts().catch(() => [] as string[]))
+            .map((t: string) => t.trim()).filter(Boolean);
+        if (names.length === 0) await this.logStructure(`${tabName} tab without aircraft`);
+        return names;
     }
 
     /** Text of the page around an anchor phrase, so logs never include the account balance. */
