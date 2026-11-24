@@ -26,7 +26,7 @@ on:
         required: false
         default: '3'
       routing_mode:
-        description: 'Routing only: inspect = read-only look, dry-run = pick but do not take, live = take the route'
+        description: 'Routing only: inspect = read-only look, dry-run = pick but do not take, live = take the route (creates it)'
         required: false
         default: 'inspect'
         type: choice
@@ -102,6 +102,7 @@ jobs:
         echo "ROUTING_MODE=${{ inputs.routing_mode || 'inspect' }}" >> .env
         echo "ROUTING_ATTEMPTS=${{ inputs.routing_attempts || '25' }}" >> .env
         echo "ROUTING_MIN_ECONOMY=${{ vars.ROUTING_MIN_ECONOMY }}" >> .env
+        echo "ROUTING_MIN_HOURS=${{ vars.ROUTING_MIN_HOURS }}" >> .env
 
     - name: Run Playwright tests
       env:

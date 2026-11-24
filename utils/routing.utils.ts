@@ -7,14 +7,15 @@ require('dotenv').config();
  * inspect : read-only. Looks at the first parked plane, asks the game for international routes and logs what it
  *           offers (and the page structure). Creates nothing.
  * dry-run : read-only. Same, but stops at the first suggestion that meets the rules and says it would take it.
- * live    : takes the first suggestion that meets the rules and presses "Next". It then logs the next screen and
- *           stops WITHOUT confirming anything (that screen has not been seen yet).
+ * live    : takes the first suggestion that meets the rules and presses "Next", which creates the route.
+ *           It then logs the screen that follows and stops.
  */
 export type RoutingMode = 'inspect' | 'dry-run' | 'live';
 
 export interface RoutingOptions {
     mode: RoutingMode;
     minEconomy: number;   // minimum economy demand of the destination
+    minHours: number;     // minimum flight time in hours
     attempts: number;     // how many suggestions to look at per plane
     maxPlanes: number;    // how many parked planes to handle per run
 }
@@ -27,6 +28,7 @@ export interface Suggestion {
     j: number;
     f: number;
     aircraftOnRoute: number;
+    hours: number;        // flight time
 }
 
 export class RoutingUtils {
@@ -47,6 +49,7 @@ export class RoutingUtils {
         return {
             mode,
             minEconomy: RoutingUtils.envNumber('ROUTING_MIN_ECONOMY', 1000, 1, 100000),
+            minHours: RoutingUtils.envNumber('ROUTING_MIN_HOURS', 8, 0, 48),
             attempts: Math.floor(RoutingUtils.envNumber('ROUTING_ATTEMPTS', 25, 1, 200)),
             maxPlanes: Math.floor(RoutingUtils.envNumber('ROUTING_MAX_PLANES', 1, 1, 50)),
         };
@@ -70,7 +73,8 @@ export class RoutingUtils {
         const route = t.match(/\b([A-Z]{4}) ?([\d.,]+) ?km ?([A-Z]{4})\b/);
         const demand = t.match(/PAX Demand ?(\d+) ?\/ ?(\d+) ?\/ ?(\d+)/);
         const onRoute = t.match(/A\/C on route ?(\d+)/);
-        if (!route || !demand || !onRoute) return null;
+        const time = t.match(/Flight time ?(\d+):(\d{2}):(\d{2})/);
+        if (!route || !demand || !onRoute || !time) return null;
         const km = Number.parseInt(route[2].replace(/[^\d]/g, ''), 10);
         return {
             from: route[1],
@@ -80,29 +84,31 @@ export class RoutingUtils {
             j: Number.parseInt(demand[2], 10),
             f: Number.parseInt(demand[3], 10),
             aircraftOnRoute: Number.parseInt(onRoute[1], 10),
+            hours: Number.parseInt(time[1], 10) + Number.parseInt(time[2], 10) / 60 + Number.parseInt(time[3], 10) / 3600,
         };
     }
 
     /**
-     * The rules: enough economy demand, and none of our aircraft already flies this hub-to-destination pair.
+     * The rules: enough economy demand, a long enough flight, and none of our aircraft already flies this hub-to-destination pair.
      * (A destination served from a different hub is fine, because "A/C on route" counts this pair only.)
      */
     public static qualifies(s: Suggestion, o: RoutingOptions, taken: Set<string>): { ok: boolean; why: string } {
         if (s.y < o.minEconomy) return { ok: false, why: `economy demand ${s.y} < ${o.minEconomy}` };
+        if (s.hours < o.minHours) return { ok: false, why: `flight time ${s.hours.toFixed(1)} h < ${o.minHours} h` };
         if (s.aircraftOnRoute > 0) return { ok: false, why: `already ${s.aircraftOnRoute} of our aircraft on this route` };
         if (taken.has(`${s.from}-${s.to}`)) return { ok: false, why: 'already chosen for another plane in this run' };
         return { ok: true, why: 'meets the rules' };
     }
 
     private static describe(s: Suggestion): string {
-        return `${s.from} -> ${s.to} | ${s.km} km | demand Y ${s.y} / J ${s.j} / F ${s.f} | our aircraft on it: ${s.aircraftOnRoute}`;
+        return `${s.from} -> ${s.to} | ${s.km} km | demand Y ${s.y} / J ${s.j} / F ${s.f} | ${s.hours.toFixed(1)} h | our aircraft on it: ${s.aircraftOnRoute}`;
     }
 
     // ---------- Main flow ----------
 
     public async run(): Promise<void> {
         const o = this.options;
-        console.log(`Routing mode: ${o.mode} | min economy demand: ${o.minEconomy} | suggestions per plane: ${o.attempts} | planes: ${o.maxPlanes}`);
+        console.log(`Routing mode: ${o.mode} | min economy demand: ${o.minEconomy} | min flight: ${o.minHours} h | suggestions per plane: ${o.attempts} | planes: ${o.maxPlanes}`);
 
         const taken = new Set<string>();
         let handled = 0;
@@ -129,7 +135,7 @@ export class RoutingUtils {
             }
             taken.add(`${chosen.from}-${chosen.to}`);
             if (o.mode === 'live') {
-                console.log('Taking this route: pressing Next and stopping at the next screen (not confirming).');
+                console.log('Taking this route: pressing Next, which creates it.');
                 await this.byText('Next').click();
                 await GeneralUtils.sleep(2000);
                 await this.logStructure('screen after Next');

@@ -69,6 +69,6 @@ prices far below auto are repaired. Routes are found by name, not position, beca
 ## Automatic routing (work in progress)
 
 Actions -> Playwright Tests -> Run workflow -> task `routing`. Modes: `inspect` (read-only, logs what the game offers),
-`dry-run` (shows the route it would take), `live` (presses Next, logs the next screen, does not confirm yet).
-Rules: international routes only, destination economy demand >= 1000 (`ROUTING_MIN_ECONOMY` variable), and none of
+`dry-run` (shows the route it would take), `live` (presses Next, which creates the route, then logs the next screen).
+Rules: international routes only, destination economy demand >= 1000 (`ROUTING_MIN_ECONOMY` variable), flight time >= 8 h (`ROUTING_MIN_HOURS`), and none of
 your aircraft already on the same hub-to-destination pair ("A/C on route" = 0).
