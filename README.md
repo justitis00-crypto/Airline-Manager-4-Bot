@@ -65,3 +65,10 @@ Passenger routes only; cargo is skipped.
 Notes on pricing: only routes whose aircraft is on the ground show a distance, so only those are priced; routes in
 flight are skipped and picked up on a later run. Prices set by hand (outside 0.99x-1.20x of auto) are left alone;
 prices far below auto are repaired. Routes are found by name, not position, because the list reorders as planes land.
+
+## Automatic routing (work in progress)
+
+Actions -> Playwright Tests -> Run workflow -> task `routing`. Modes: `inspect` (read-only, logs what the game offers),
+`dry-run` (shows the route it would take), `live` (presses Next, which creates the route, then logs the next screen).
+Rules: international routes only, destination economy demand >= 1000 (`ROUTING_MIN_ECONOMY` variable), flight time >= 8 h (`ROUTING_MIN_HOURS`), and none of
+your aircraft already on the same hub-to-destination pair ("A/C on route" = 0).
