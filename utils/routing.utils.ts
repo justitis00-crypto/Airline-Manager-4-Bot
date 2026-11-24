@@ -128,6 +128,14 @@ export class RoutingUtils {
                 await this.planeRows().nth(i).click();
                 await GeneralUtils.sleep(1500);
 
+                // A plane that already has a route (for example one back from repairs) shows Depart/Reroute.
+                // The regular bot departs those, so they are left completely alone.
+                const alreadyRouted = await this.byText('Depart').isVisible().catch(() => false)
+                    || await this.byText('Reroute').isVisible().catch(() => false);
+                if (alreadyRouted) {
+                    console.log(`${tab} aircraft ${i + 1} (${names[i]}): already has a route (Depart/Reroute shown). Ignored.`);
+                    continue;
+                }
                 if (!(await this.byText('Intl route').isVisible().catch(() => false))) {
                     console.log(`${tab} aircraft ${i + 1} (${names[i]}): no "Intl route" button, so it cannot be given a route now. Skipping.`);
                     continue;
