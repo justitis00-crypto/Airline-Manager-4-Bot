@@ -183,7 +183,8 @@ export class RoutingUtils {
     }
 
     private parkedRows(): Locator {
-        return this.page.getByText('PARKED', { exact: true });
+        // The status may sit in its own element or inside a longer row text, so match it as a word.
+        return this.page.getByText(/\bPARKED\b/);
     }
 
     /** Opens the aircraft list on the left and shows the Parked tab. Returns how many parked aircraft there are. */
@@ -194,8 +195,20 @@ export class RoutingUtils {
             throw new Error('Could not find the "Parked" tab of the aircraft list.');
         }
         await tab.click();
-        await GeneralUtils.sleep(1500);
-        return this.parkedRows().count();
+
+        let count = 0;
+        for (let i = 0; i < 8; i++) {
+            await GeneralUtils.sleep(1000);
+            count = await this.parkedRows().count();
+            if (count > 0) break;
+        }
+        if (count === 0) {
+            const planes = (await this.page.getByText(/\bET-[\w-]+/).allInnerTexts().catch(() => [] as string[]))
+                .map(t => t.replace(/\s+/g, ' ').trim()).filter(t => t.length < 80).slice(0, 12);
+            console.log(`Nothing marked PARKED after opening the Parked tab. Aircraft texts on screen: ${JSON.stringify(planes)}`);
+            await this.logStructure('Parked tab without rows');
+        }
+        return count;
     }
 
     /** Text of the page around an anchor phrase, so logs never include the account balance. */
