@@ -1,14 +1,15 @@
 import { Locator, Page } from "@playwright/test";
 import { GeneralUtils } from "./general.utils";
+import { PricingUtils, Prices } from "./pricing.utils";
 
 require('dotenv').config();
 
 /**
  * inspect : read-only. Looks at the first parked plane, asks the game for international routes and logs what it
  *           offers (and the page structure). Creates nothing.
- * dry-run : read-only. Same, but stops at the first suggestion that meets the rules and says it would take it.
- * live    : takes the first suggestion that meets the rules and presses "Next", which creates the route.
- *           It then logs the screen that follows and stops.
+ * dry-run : takes the first suggestion that meets the rules, presses "Next", fills in the ticket prices on the
+ *           create-route screen and logs them, but does NOT press "Create route" (nothing is created or paid).
+ * live    : same, then presses "Create route" (this creates the route and pays the route fee).
  */
 export type RoutingMode = 'inspect' | 'dry-run' | 'live';
 
@@ -151,13 +152,11 @@ export class RoutingUtils {
                     break;
                 }
                 taken.add(`${chosen.from}-${chosen.to}`);
-                if (o.mode === 'live') {
-                    console.log('Taking this route: pressing Next, which creates it.');
+                if (o.mode !== 'inspect') {
                     await this.byText('Next').click();
-                    await GeneralUtils.sleep(2000);
-                    await this.logStructure('screen after Next');
-                    finished = true;
+                    await this.fillCreateScreen(chosen);
                 }
+                finished = true;
             }
         }
 
@@ -192,6 +191,75 @@ export class RoutingUtils {
             await GeneralUtils.sleep(1500);
         }
         return null;
+    }
+
+    // ---------- Create-route screen ----------
+
+    /** The game's Autoprice fills the three boxes one after another; wait until they form one consistent set. */
+    private async waitForAutoprice(gameMode: 'realism' | 'easy'): Promise<Prices | null> {
+        const f = PricingUtils.FORMULAS[gameMode];
+        const consistent = (p: Prices): boolean => {
+            const low = Math.floor((p.y - f.y[1] - 1) / f.y[0]);
+            const high = Math.ceil((p.y - f.y[1]) / f.y[0]);
+            for (let km = Math.max(1, low); km <= high; km++) {
+                const a = PricingUtils.autoPrices(km, gameMode);
+                if (a.y === p.y && a.j === p.j && a.f === p.f) return true;
+            }
+            return false;
+        };
+        for (let i = 0; i < 16; i++) {
+            await GeneralUtils.sleep(500);
+            const p = await this.readCreatePrices();
+            if (p && consistent(p)) {
+                await GeneralUtils.sleep(700);
+                const again = await this.readCreatePrices();
+                if (again && again.y === p.y && again.j === p.j && again.f === p.f) return again;
+            }
+        }
+        return null;
+    }
+
+    private async readCreatePrices(): Promise<Prices | null> {
+        const read = async (id: string) => Number.parseInt(((await this.page.locator(id).inputValue().catch(() => '')) || '').replace(/[^\d]/g, ''), 10);
+        const p = { y: await read('#eSeat'), j: await read('#bSeat'), f: await read('#fSeat') };
+        return [p.y, p.j, p.f].every(v => Number.isFinite(v) && v > 0) ? p : null;
+    }
+
+    /** On the screen after "Next": autoprice, apply the multipliers, and (live only) create the route. */
+    private async fillCreateScreen(chosen: Suggestion) {
+        const o = this.options;
+        const pricing = PricingUtils.optionsFromEnv();
+
+        await this.page.locator('#eSeat').waitFor({ state: 'visible', timeout: 10000 });
+        const fee = (await this.near('Route fee', 0, 60)).replace(/\s+/g, ' ').trim();
+        console.log(`Create-route screen for ${chosen.from} -> ${chosen.to}. ${fee}`);
+
+        await this.byText('Autoprice').click();
+        const auto = await this.waitForAutoprice(pricing.gameMode);
+        if (!auto) {
+            const seen = await this.readCreatePrices();
+            throw new Error(`Autoprice never settled into a consistent set (page shows ${seen ? `Y ${seen.y} / J ${seen.j} / F ${seen.f}` : 'nothing'}). Nothing created.`);
+        }
+
+        const target = PricingUtils.targetPrices(auto, pricing.multipliers, pricing.margin);
+        await this.page.locator('#eSeat').fill(String(target.y));
+        await this.page.locator('#bSeat').fill(String(target.j));
+        await this.page.locator('#fSeat').fill(String(target.f));
+
+        const shown = await this.readCreatePrices();
+        const ok = !!shown && shown.y === target.y && shown.j === target.j && shown.f === target.f;
+        console.log(`Prices: auto Y ${auto.y} / J ${auto.j} / F ${auto.f} -> target Y ${target.y} / J ${target.j} / F ${target.f} | boxes now ${shown ? `Y ${shown.y} / J ${shown.j} / F ${shown.f}` : 'unreadable'}${ok ? '' : ' (MISMATCH)'}`);
+        if (!ok) throw new Error('The price boxes do not show the target prices. Nothing created.');
+
+        if (o.mode !== 'live') {
+            console.log('dry-run: stopping before "Create route". Nothing was created or paid.');
+            return;
+        }
+
+        await this.byText('Create route').click();
+        await GeneralUtils.sleep(3000);
+        console.log('Pressed "Create route".');
+        await this.logStructure('screen after Create route');
     }
 
     // ---------- Page helpers ----------
