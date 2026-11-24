@@ -71,7 +71,7 @@ export class RoutingUtils {
     public static parseSuggestion(text: string): Suggestion | null {
         const t = text.replace(/\s+/g, ' ');
         const route = t.match(/\b([A-Z]{4}) ?([\d.,]+) ?km ?([A-Z]{4})\b/);
-        const demand = t.match(/PAX Demand ?(\d+) ?\/ ?(\d+) ?\/ ?(\d+)/);
+        const demand = t.match(/PAX Demand ?([\d,]+) ?\/ ?([\d,]+) ?\/ ?([\d,]+)/);
         const onRoute = t.match(/A\/C on route ?(\d+)/);
         const time = t.match(/Flight time ?(\d+):(\d{2}):(\d{2})/);
         if (!route || !demand || !onRoute || !time) return null;
@@ -80,9 +80,9 @@ export class RoutingUtils {
             from: route[1],
             to: route[3],
             km,
-            y: Number.parseInt(demand[1], 10),
-            j: Number.parseInt(demand[2], 10),
-            f: Number.parseInt(demand[3], 10),
+            y: Number.parseInt(demand[1].replace(/,/g, ''), 10),
+            j: Number.parseInt(demand[2].replace(/,/g, ''), 10),
+            f: Number.parseInt(demand[3].replace(/,/g, ''), 10),
             aircraftOnRoute: Number.parseInt(onRoute[1], 10),
             hours: Number.parseInt(time[1], 10) + Number.parseInt(time[2], 10) / 60 + Number.parseInt(time[3], 10) / 3600,
         };
