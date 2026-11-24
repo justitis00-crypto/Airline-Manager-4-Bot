@@ -114,8 +114,8 @@ export class RoutingUtils {
         let handled = 0;
         let finished = false;
 
-        // New aircraft normally wait under "Parked"; "Pending" is checked as well in case they show up there.
-        for (const tab of ['Parked', 'Pending']) {
+        // New aircraft always wait under the "Parked" tab.
+        for (const tab of ['Parked']) {
             if (handled >= o.maxPlanes || finished) break;
 
             const names = await this.openList(tab);
