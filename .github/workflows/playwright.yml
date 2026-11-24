@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       task:
-        description: 'What to run: full = everything, resources = fuel and CO2 only, pricing = ticket prices (see README)'
+        description: 'What to run: full = everything, resources = fuel and CO2 only, pricing = ticket prices, routing = routes for parked planes (see README)'
         required: true
         default: 'full'
         type: choice
@@ -11,6 +11,7 @@ on:
           - full
           - resources
           - pricing
+          - routing
       pricing_mode:
         description: 'Pricing only: inspect = read-only look, dry-run = log planned prices, live = save prices'
         required: false
@@ -24,6 +25,19 @@ on:
         description: 'Pricing only: how many routes to process (0 = all)'
         required: false
         default: '3'
+      routing_mode:
+        description: 'Routing only: inspect = read-only look, dry-run = pick but do not take, live = take the route'
+        required: false
+        default: 'inspect'
+        type: choice
+        options:
+          - inspect
+          - dry-run
+          - live
+      routing_attempts:
+        description: 'Routing only: how many suggested routes to look at per plane'
+        required: false
+        default: '25'
   # Backup only. GitHub often delays or skips scheduled runs, so the main
   # triggers are external calls to the workflow_dispatch API (see README).
   schedule:
@@ -85,6 +99,9 @@ jobs:
         echo "PRICE_MULT_J=${{ vars.PRICE_MULT_J }}" >> .env
         echo "PRICE_MULT_F=${{ vars.PRICE_MULT_F }}" >> .env
         echo "PRICE_MARGIN=${{ vars.PRICE_MARGIN }}" >> .env
+        echo "ROUTING_MODE=${{ inputs.routing_mode || 'inspect' }}" >> .env
+        echo "ROUTING_ATTEMPTS=${{ inputs.routing_attempts || '25' }}" >> .env
+        echo "ROUTING_MIN_ECONOMY=${{ vars.ROUTING_MIN_ECONOMY }}" >> .env
 
     - name: Run Playwright tests
       env:
@@ -94,6 +111,8 @@ jobs:
           npx playwright test tests/resource.spec.ts
         elif [ "$TASK" = "pricing" ]; then
           npx playwright test tests/pricing.spec.ts
+        elif [ "$TASK" = "routing" ]; then
+          npx playwright test tests/routing.spec.ts
         else
           npx playwright test tests/airlineManager.spec.ts
         fi
